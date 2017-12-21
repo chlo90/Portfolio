@@ -1,0 +1,202 @@
+---
+title: "SupplyChain_ts"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(fpp) 
+library(dplyr) 
+PG <- read.csv("IPG2211N.csv") %>% select(-DATE) %>% ts(start=c(1972,1), frequency=12)
+PG1.tr <- window(PG, end=c(1995,12)) 
+PG1.te <- window(PG, start=c(1996,1), end=c(2000,12))
+```
+
+## Preliminary analysis of training data
+#1. 
+When we examine ACF and PACF of the Box-Cox transformed series with a non-seasonal difference and seasonal difference as well as both non-seasonal and seasonal difference, we see that they all look pretty much stationary. This statement is corroborated by running adf.test on each differenced Box-Cox transformed series. The p-value associated with each series shows that they are statistically significant (<0.05) and therefore they are all stationary.
+
+
+```{r PG}
+plot(PG)
+lambda <- BoxCox.lambda(PG1.tr)
+transformed_data <- BoxCox(PG1.tr, lambda)
+#no seasonal difference 
+tsdisplay(diff(diff(transformed_data, 1), lag=48))
+
+#with seasonal difference 
+tsdisplay(diff(transformed_data, 12), lag=48) 
+
+#both non-seasonal and seasonal difference 
+diff1 <- diff(transformed_data, 1)
+diff1_and_12 <- diff(diff1, 12)
+tsdisplay(diff1_and_12, lag=48) 
+
+#Run adf.test from above series 
+adf.test(diff1)#non-seasonal 
+diff12 <- diff(transformed_data, 12)#seasonal 
+adf.test(diff12)
+adf.test(diff1_and_12)
+
+```
+
+## Find ARIMA model to three series and find maximum order 
+
+For transformed series with non-seasonal difference (diff1), we get maximum order of p,q,P,Q as 3, 3, 2, 2. We can approximate the maximum order by looking at the ACF and PACF of the differenced Box-Cox Transformed series. 
+For transformed series with seasonal difference (diff12), we get maximum order of 2,5,2,2. 
+For transformed series with both non-seasonal and seasonal difference (diff1_and_12), we get maximum order of 2,3,3,3. 
+
+
+## Automatic Arima Selection 
+#2. 
+
+For automatically selected arima, we get ARIMA(1,1,2)(0,1,1)[12] model with AICc=-1928.8, BIC=-1911.03, ME=-0.0006751673, RMSE = 0.00682248. The coefficients for AR1, MA1, and M2 are 0.3733, -0.4466, and -0.2637. 
+
+Residuals do not violate the assumption of constant location and scale - looks like white noise so the series should be stationary and modelled correctly. 
+
+ACF of Residuals - Residuals appear to be random.
+The Ljung-Box Q null hypothesis is that there is no autocorrelation in the error and a Ljung-Box Q p-value above indicates that I have no evidence against the null of no autocorrelation.
+
+Based on the visual inspection of the forecast plot and the out-of-sample fit statistics, we see that the actual data for electricity generation fits pretty close to the prediction. AICc and BIC are pretty low, so the model has pretty high goodness of fit and this is supported by low RMSE of 1.1797 and ME of -0.0969. 
+
+```{r}
+auto <- auto.arima(PG1.tr, lambda=lambda)
+plot(forecast(auto, h=60), xlim=c(1990, 2001), ylim=c(60,140)) 
+lines(PG1.te, col="red", pch=19)
+summary(auto)
+forecast <- forecast(auto, h=60)
+#Use function tsdiag to assess validity of model above 
+tsdiag(auto, gof.lag=24) 
+accuracy(forecast, PG1.te)
+```
+###3 
+##Manual Model Selection on seasonally differenced 
+
+On the seasonally differenced series, we get a model of ARIMA(2,0,2)(0,1,1)[12] with drift. THis model has AICc=931.56 and BIC=956.48. Compared to the arima model, ARIMA(1,1,2)(0,1,1)[12], we got from above with AICc=-1928.89 and BIC=-1911.03, this model is doing worse in terms of AICc and BIC. 
+
+```{r}
+
+model_select <- auto.arima(PG1.tr, max.p = 2, max.q=5, max.P = 2, max.Q=2, D=1)
+summary(model_select)
+
+
+```
+•	Report on the best model that you identified in each case and comment on its AICc and BICc.  How do your model compares with the one found by auto.arima(…)?
+
+ARIMA(1,1,2)(0,0,1)[12] is the best model with AICc=-1928.92 and BIC=-1911.06. We have gotten this model from auto.arima with parameters of maximums of p, q, P, Q discovered from the number 1 question instead of looping through to find the optimal model. 
+
+The model from the question 2 is ARIMA(1,1,2)(0,1,1)[12] with AICc=-1928.89 and BIC=-1911.03 and performed better than either models. 
+
+###4 
+##Non-Seasonal difference Manual Model Selection 
+
+This model, ARIMA(2,1,1)(0,1,1)[12] with non-seasonal difference, performed better than the previous model with seasonal difference as this model has AICc=928.21 and BIC=946.07, compared to previous model ARIMA(2,0,2)(0,1,1)[12] with drift with AICc=931.56 and BIC=956.48. 
+
+Compared to the model from number 2, ARIMA(1,1,2)(0,1,1)[12] model with AICc=-1928.8, BIC=-1911.03, it also did not perform as well. 
+
+
+```{r}
+model_select_2 <- auto.arima(PG1.tr, max.p = 3, max.q=3, max.P = 2, max.Q=2, d=1)
+
+summary(model_select_2)
+
+```
+###5
+##ARIMA model for the expanded training set
+
+
+The Maximum order of p, q, P, Q when d=1 and D=1 is 2,2,3,2 and running adf.test on the seasonally and non-seasonally differenced series shows that the p-value associated with each series shows that it is statistically significant (<0.05) and therefore it's stationary.
+
+```{r}
+PG2.tr <- window(PG, end=c(2011,12))
+PG2.te <- window(PG, start=c(2012,1))
+
+la <- BoxCox.lambda(PG2.tr)
+transformed <- BoxCox(PG2.tr, la)
+#no seasonal difference 
+diff_non_season <- diff(transformed, 1)
+diff_both <- diff(diff_non_season, 12)
+
+adf.test(diff_both) 
+tsdisplay(diff_both)
+
+```
+
+##6
+##Automatic ARIMA model selection on the expanded dataset
+
+The ARIMA model returns ARIMA(2,1,2)(0,1,1)[12] with AICc=-3740.78 and BIC=-3716.08. Tsdiag shows that residuals do not violate the assumption of constant location and scale and it looks like white noise so the series should be stationary and modelled correctly. The Ljung-Box Q null hypothesis is that there is no autocorrelation in the errors and a Ljung-Box Q p-value above indicates that I have no evidence against the null of no autocorrelation. ME is -0.8180414 so pretty low forecast bias and RMSE jumps from 1.559354 to 2.788739.
+
+```{r}
+auto_2 <- auto.arima(PG2.tr, lambda = la)
+plot(forecast(auto_2)) 
+summary(auto_2)
+
+tsdiag(auto_2, gof.lag=24)
+
+#69-month forecast 
+plot(forecast(auto_2, h=69), xlim=c(2000,2018), ylim=c(60,140))
+lines(PG2.te, col="red")  
+forecast_2 <- forecast(auto_2, h=69)
+accuracy(forecast_2, PG2.te)
+
+
+```
+
+###7
+##Automatic ARIMA model selection with a reduced training dataset
+
+
+Model returned was ARIMA(0,1,2)(1,2,1)[12] with AICc=337.95   BIC=347.21. The tsdiag, used to assess validity of the model, show that the residuals does not appear to be random on earlier years and model does not meet the statistical assumption of i.i.d observations and does not look white noise - so probably series is not stationary and modelled correctly. A Ljung-Box Q p-value is below the line and cannot reject the null hypothesis. 
+
+We get a better model than the above model using auto.arima, which is ARIMA(0,1,2)(1,2,1)[12] with AICc=337.97 and BIC=347.21.  ME is 2.7819661 and MSE is 5.081388 so it has a pretty low forecast bio, which is corroborated by pretty good fit on the forecast plot. 
+
+This model is ARIMA(0,1,2)(1,2,1)[12] with RMSE 5.081388 4 and AICc=337.95 and the previous model above is ARIMA(2,1,2)(0,1,1)[12] with RMSE 2.788739, ME: -0.8180414 and AICc=-3740.78. So previous model has a better fit with lower RMSE. But we cannot compare the AICc and BIC of both models as AICc can only be used as a metric for comparison across models when the models are fit on the same dataset and since these two models do not use same dataset, it is not comparable.
+
+
+```{r}
+PG3.tr <- window(PG, start=c(2005,1), end=c(2011,12))
+lam = BoxCox.lambda(PG3.tr)
+plot(PG3.tr)
+model11 <- auto.arima(PG3.tr, lambda = lam)
+plot(forecast(model11)) 
+summary(model11)
+
+
+#Use function tsdiag to assess validity of model above 
+tsdiag(model11) 
+
+
+diff1a <- diff(PG3.tr, 1)
+diff1_and_12a <- diff(diff1a, 12)
+tsdisplay(diff1_and_12a, lag=48) 
+
+model14 <- Arima(PG3.tr, order = c(0,1,2), season=c(1,2,1))
+summary(model14)
+
+
+#69-month forecast 
+
+forecast_3 <- forecast(model14, h=69)
+accuracy(forecast_3, PG)
+
+
+```
+
+###8
+##Forecasting future monthly US electricity generation
+
+I've fitted ARIMA(2,1,2)(0,1,1)[12]. Tsdiag shows that residuals do not violate the assumption of constant location and scale and it looks like white noise so the series should be stationary and modelled correctly. The Ljung-Box Q null hypothesis is that there is no autocorrelation in the errors and a Ljung-Box Q p-value above indicates that I have no evidence against the null of no autocorrelation. ME is -0.1961734 so pretty low forecast bias and RMSE is 2.174759. 
+
+
+
+```{r}
+PG.tr <- window(PG, start=c(2005,1))
+best_model <- Arima(PG.tr, order=c(2,1,2), season=c(0,1,1))
+summary(best_model)
+
+forecast_7 <- forecast(best_model, h=63)
+plot(forecast(forecast_7)) 
+tsdiag(best_model)
+
+```
+

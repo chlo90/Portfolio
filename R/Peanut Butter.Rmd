@@ -1,0 +1,192 @@
+---
+title: "Time Series Peanut Butter Data"
+output: html_document
+---
+
+# 1. Use The Lasso on the training set to obtain (a) a shrunk model and (b) the reduced set of predictive variables minimizing the cross-validated MSE over the training set
+
+```{r}
+library(fpp)
+library(reshape)
+library(dplyr)
+library(glmnet)
+pb <- read.csv("Peanut Butter Chicago.csv")
+
+PBS <- read.csv("Peanut Butter Chicago.csv")[,-1] %>% 
+  mutate( F_LSA=ifelse(F=="A",1,0),   # Large Size Ad Dummy
+          F_MSA=ifelse(F=="B",1,0),   # Medium Size Ad Dummy
+          F_SSA=ifelse(F=="C",1,0),   # Small Size Ad Dummy
+          D_MIN=ifelse(D==1,1,0),     # Minor In-Store Display Dummy
+          D_MAJ=ifelse(D==2,1,0)) %>% # Major In-Store Display Dummy
+  # Promotional variables are weighted by sales volume (oz)
+  mutate(S_LB = UNITS * VOL_EQ,
+         WF_LSA = F_LSA * UNITS * VOL_EQ,     # Large Size Ad Weighted
+         WF_MSA = F_MSA * UNITS * VOL_EQ,     # Medium Size Ad Weighted
+         WF_SSA = F_SSA * UNITS * VOL_EQ,     # Small Size Ad Weighted
+         WD_MIN = D_MIN * UNITS * VOL_EQ,     # Minor In-Store Display Weighted
+         WD_MAJ = D_MAJ * UNITS * VOL_EQ) %>% # Major In-Store Display Weighted
+  mutate(VEND =ifelse(VEND == 48001,"SK",ifelse( VEND == 99998,"PL","OB"))) %>%
+  select(-F, -D)
+
+# Create aggregate variables by product-week
+x.pw <- group_by(PBS, WEEK, VEND) %>% 
+  summarise(S.DOLLARS = sum(DOLLARS),      # Total $ Sales 
+            S.S_LB    = sum(S_LB),         # Total L. Sales
+            S.WF_LSA  = sum(WF_LSA),       # Total Weighted Large Ad
+            S.WF_MSA  = sum(WF_MSA),       # Total Weighted Medium Ad
+            S.WF_SSA  = sum(WF_SSA),       # Total Weighted Small Ad
+            S.WD_MIN  = sum(WD_MIN),       # Total Weighted Minor Store Disp
+            S.WD_MAJ  = sum(WD_MAJ)) %>%   # Total Weighted Major Store Disp
+  # Calculate weigted averages of Advertising and Promotion variables
+  mutate(A.PPU = log(S.DOLLARS / S.S_LB),  # Avg. Price per unit (pound)
+         S.WF_LSA  = S.WF_LSA / S.S_LB,    # Avg. Weighted Large Ad
+         S.WF_MSA  = S.WF_MSA / S.S_LB,    # Avg. Weighted Medium Ad
+         S.WF_SSA  = S.WF_SSA / S.S_LB,    # Avg. Weighted Small Ad
+         S.WD_MIN  = S.WD_MIN / S.S_LB,    # Avg. Weighted Minor Store Disp
+         S.WD_MAJ  = S.WD_MAJ / S.S_LB)    # Avg. Weighted Major Store Disp
+#
+
+
+xmat <- x.pw %>%
+  mutate(LS  = log(S.S_LB)) %>% 
+  select(-S.DOLLARS, -S.S_LB)
+
+xmat_train <- subset(xmat, WEEK >= 1 & WEEK <= 94)
+xmat_test <- subset(xmat, WEEK >= 95 & WEEK <= 104)
+
+
+# Creeate separate columns for vars of each brand group
+xmat_train <- data.frame(filter(xmat_train, VEND == "SK"),
+                   filter(xmat_train, VEND == "OB"),
+                   filter(xmat_train, VEND == "PL")) %>%
+  select(-WEEK, -WEEK.1, -WEEK.2, 
+         -VEND, -VEND.1, -VEND.2, 
+         -LS.1, -LS.2) # After droping vars. you should have 19 vars left
+xmat_test <- data.frame(filter(xmat_test, VEND == "SK"),
+                        filter(xmat_test, VEND == "OB"),
+                        filter(xmat_test, VEND == "PL")) %>%
+  select(-WEEK, -WEEK.1, -WEEK.2, 
+         -VEND, -VEND.1, -VEND.2, 
+         -LS.1, -LS.2) 
+
+
+
+xm_train <- model.matrix(LS ~., data=xmat_train)[,-1]
+y_train <- xmat_train[,"LS"]
+xm_test <- model.matrix(LS ~., data=xmat_test)[,-1]
+y_test <- xmat_test[,"LS"]
+
+set.seed(1) 
+lambda <- 10^seq(10, -2, length = 100)
+cv.out <- cv.glmnet(xm_train, y_train, alpha = 1, nfolds = 10)
+bestlam <- cv.out$lambda.min
+plot(cv.out)
+#as.matrix(inp[,!colnames(inp) %in% c('LS') ]),inp[,'LS']
+lasso.mod <- glmnet(xm_train, y_train, alpha = 1, lambda = bestlam)
+lasso.pred <- predict(lasso.mod, s = bestlam, newx = xm_test)
+mean((lasso.pred-y_test)^2) #MSE = 0.17573
+
+lambda_1se <- cv.out$lambda.
+lasso.mod$beta
+
+```
+##2. Use the training set to fit an unrestricted regression model (i.e., lm(…) ) on the reduced set of explanatory variables identified by The Lasso.  Report the coefficients of the full model and comment on the fit of the model and examine the auto-correlations of the residuals of this model.
+
+There's outliers in residuals around 80 which suggests that something unusual happening and it would be worth investigating. The remaining residuals show that the model has captured the patterns in the data quite well, although there is a small amount of autocorrelation left in the residuals (seen in the significant spike in the ACF plot). This suggests that the model can be slightly improved, although it is unlikely to make much difference to the resulting forecasts. The adjusted R-squared is 0.8338, so the fit of the model is pretty good.  
+
+```{r}
+xm_train_reduced <- subset(xm_train, select=c(S.WD_MIN, A.PPU))
+xm_test_reduced <- subset(xm_test, select=c(S.WD_MIN, A.PPU))
+reduced_lm <- lm(y_train ~ xm_train_reduced, data=xmat_train)
+summary(reduced_lm)
+
+coefficients(reduced_lm)
+res <- residuals(reduced_lm)
+
+plot(res, ylab="Residuals",xlab="Sale")
+Acf(res, main="ACF of residuals")
+Pacf(res)
+```
+
+##3. Fit an ARIMA model to explain the training set log-of-sales-volume data.  Report the diagnostic of your model’s residuals and comment on the model’s validity.
+
+Residuals do not violate the assumption of constant location and scale - looks like white noise so the series should be stationary and modelled correctly. 
+Tsdiag shows that residuals do not violate the assumption of constant location and scale and it looks like white noise so the series should be stationary and modelled correctly. The Ljung-Box Q null hypothesis is that there is no autocorrelation in the errors and a Ljung-Box Q p-value above indicates that I have no evidence against the null of no autocorrelation, although the p-values are cutting close to the limit of the test for lags greater than 1. So the model can be improved as supported by RMSE of 0.6203677, AICc of 189.54 and BIC of 199.26.
+
+```{r}
+model <- Arima(y_train, order = c(1,0,1))
+
+tsdiag(model) 
+summary(model) 
+
+
+lines(x = seq(95,104), y_test, col="red") #on the wrong axis again  
+
+
+```
+
+##4.	Use the model in Question 3 to prepare a 10 period ahead forecast and compare it (overly it) with the testing set log-of-sales data.  Comment on the usefulness of this model in terms of precision and confidence interval.
+
+The precision is pretty low in capturing the patterns of the dataset and the confidence interval is very wide, so this model is not so useful in capturing the data's forecast. 
+```{r}
+plot(forecast(model, h=10))
+lines(x = seq(95, 104), y_test, col="red") 
+```
+
+##5. Use the auto.arima(…) function to fit a dynamic regression model to explain sales data (log) using only the predictive variables identified by The Lasso in Question 1.  Examine the model’s residuals and comment on its validity.
+
+We convert the xm_train_reduced that contain only the predictive variables identified by The Lasso in Question 1 into a time series using ts() and fit a dynamic regression model using auto.arima. Looking at the model's residuals, we can see that residuals look pretty random and looks like white noise so the series should be stationary and modelled correctly. 
+
+The Ljung-Box Q null hypothesis is that there is no autocorrelation in the error and a Ljung-Box Q p-value above indicates that I have no evidence against the null of no autocorrelation.
+
+```{r}
+reduced <- auto.arima(y_train, xreg=xm_train_reduced)
+summary(reduced)#AICc=66.63   BIC=99.99 RMSE = 0.2766829
+tsdiag(reduced)
+tsdisplay(arima.errors(reduced)) 
+fcast_2 <- forecast(reduced, h=10, xreg=xm_test_reduced)
+```
+
+##6. Obtain a dynamic regression model that improves on the auto-arima model in Question 5 in terms of its information coefficients and residual diagnostics. Compare the coefficients of the explanatory variables in (a) The Lasso model, (b) The unrestricted model obtained in Question 2, and (c) The ones obtained in this question.  Then use the B notation (polynomial) to describe the model you obtained.
+
+Improved_2 Arima model improves on the auto-arima model in Question 5 as it improved AICc to AICc=33.13  and BIC=53.87. We first tried using auto.arima model with max orders set with stepwise= FALSE, but it could be improved. So we tried fitting different combination of orders below p=4 and q=4 and found Arima(3,0,2) model that lowered the AICc and BIC. 
+The resual diagnostics show that residuals look white noise and ACF and PACF that there is no lag that is significant. We compare the coefficients of the explanatory variables in The Lasso model, The unrestricted model in Question 2, and the Reduced_3 model. The current model has the smallest coefficients while S.MD_MIN coefficient in unrestricted model is bigger than lasso model while A.PPU coefficient is smaller. The B-notation for this model is 
+$(y_t = 6.9242+0.2438*S.WD_MIN-2.5624*A.PPU + n_t)$
+$((1-0.4951*B+0.9876*B^2 -0.3875*B^3)n_t = (1+0.1324*B + B^2)e_t)$
+
+
+```{r}
+
+improved <- auto.arima(y_train, xreg = xm_train_reduced, max.p = 10, max.q = 10, max.d = 3, max.P = 10, max.Q = 10, max.D = 3, ic = 'aicc', stepwise = FALSE, parallel = TRUE)
+summary(improved)
+tsdisplay(arima.errors(improved)) # try before 4,0, 4(3, 0, 2)
+
+improved_2 <- Arima(y_train, xreg = xm_train_reduced, order = c(3,0,2))
+summary(improved_2)
+tsdiag(improved_2)
+
+coefficients(improved_2) #Current model - Second smallest 
+lasso.mod$beta #Lasso model  - Coefficient biggest 
+coefficients(reduced_lm) #Unrestricted model - Coefficient smallest 
+
+```
+
+##7. Use the model in Question 5 to prepare a 10 period ahead forecast and compare it (overly it) with the testing set log-of-sales data.  Comment on the usefulness of this model in terms of precision and confidence interval relative to the model without explanatory variables in Question 3.
+
+The forecast that we obtain from the model from Question 5 show that it captures the forecast data pretty well with pretty narrow confidence interval and good precision compared to the model in Question 3 that has a much wider confidence interval and low precision. 
+
+```{r}
+fcast <- forecast(improved_2, h=10, xreg=xm_test_reduced)
+plot(fcast, xlim = c(1, 104))
+lines(x = seq(95, 104), y_test,col="red") 
+
+```
+##8.	After you complete a project, it is often useful to reflect on what would you different if you were to perform this project again.  This is no exception.  Comment on the training and testing fit statistics and discuss how do you think you could improve on the performance of the model in terms of (a) additional data, (b) different pre-processing of the existing data, and (c) different modeling choices.  Discuss your assessment of the potential for improvement (ex-ante priorities) for the different improvement options you suggest.
+
+Although different Arima models have given pretty high MSE providing a good fit to the model, we know that these models definitely have a room for improvement. For the improved_2 model from question 6, we see that the test set RMSE jumps to 0.5 from the trainign set of 0.25 and for auto arima model, it jumps from 0.28 to 0.43. Since Arima model does not track external variables, we could include variables such as economic indices, unemployment rate, real disposable person income indices that would reveal the economic trends that are influential to consumers. Also it would been worthwhile to look at the individual store level, not just the weekly sale for supermarket chain. We could've also preprocessed data to look at monthly data to see if there's any seasonality component to the demand and fit the Arima model with seasonality to see if it fit the data better. 
+
+```{r}
+accuracy(fcast, y_test) #improved_2 model 
+accuracy(fcast_2, y_test) #auto arima model 
+```
+
